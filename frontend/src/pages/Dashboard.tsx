@@ -5,7 +5,13 @@ import { useUIStore } from "../store/uiStore";
 import { StatCard } from "../components/dashboard/StatCard";
 import { ActivityCard } from "../components/activities/ActivityCard";
 import { Button } from "../components/ui/Button";
-import { cn } from "../utils";
+
+const getGreeting = (): string => {
+  const hour = new Date().getHours();
+  if (hour >= 6 && hour < 12) return "Buenos días 👋";
+  if (hour >= 12 && hour < 19) return "Buenas tardes 👋";
+  return "Buenas noches 👋";
+};
 
 const SectionTitle = ({ children }: { children: React.ReactNode }) => (
   <h2 className="text-xs font-semibold text-slate-500 uppercase tracking-widest mb-3">
@@ -35,7 +41,7 @@ export const Dashboard = () => {
       <div className="flex items-center justify-between">
         <div>
           <h1 className="text-2xl font-bold text-slate-100 tracking-tight">
-            Buenos días 👋
+            {getGreeting()}
           </h1>
           <p className="text-sm text-slate-500 mt-1">
             Tenés{" "}

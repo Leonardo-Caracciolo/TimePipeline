@@ -9,7 +9,7 @@ engine = create_engine(
     echo=settings.DEBUG,
 )
 
-# Enable WAL mode for better concurrent read performance on SQLite
+
 @event.listens_for(engine, "connect")
 def set_sqlite_pragma(dbapi_conn, connection_record):
     cursor = dbapi_conn.cursor()
@@ -35,5 +35,5 @@ def get_db() -> Session:
 
 
 def init_db():
-    from app.models import activity  # noqa: F401 - registers models
+    from app.models import user, activity  # noqa: F401 — registers all models
     Base.metadata.create_all(bind=engine)

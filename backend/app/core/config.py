@@ -12,8 +12,11 @@ class Settings(BaseSettings):
 
     DATABASE_URL: str = f"sqlite:///{BASE_DIR}/timepipeline.db"
 
-    # In production, set this env var to a JSON array string:
-    # CORS_ORIGINS='["https://timepipeline-frontend.onrender.com"]'
+    # JWT
+    JWT_SECRET_KEY: str = "change-me-in-production-use-a-very-long-random-secret"
+    JWT_ALGORITHM: str = "HS256"
+    JWT_EXPIRE_MINUTES: int = 60 * 24 * 7  # 7 days
+
     CORS_ORIGINS_JSON: str = (
         '["http://localhost:5173","http://localhost:3000","http://127.0.0.1:5173"]'
     )
@@ -28,4 +31,3 @@ class Settings(BaseSettings):
 
 
 settings = Settings()
-

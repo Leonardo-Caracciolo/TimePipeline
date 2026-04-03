@@ -1,12 +1,13 @@
-import { useEffect } from "react";
+import { useEffect, useState } from "react";
 import { useForm, Controller } from "react-hook-form";
 import { zodResolver } from "@hookform/resolvers/zod";
 import { z } from "zod";
+import { AlertTriangle } from "lucide-react";
 import { Input, Textarea, Select, Toggle } from "../ui/FormFields";
 import { Button } from "../ui/Button";
-import { useCategories, useCreateActivity, useUpdateActivity } from "../../hooks";
+import { useCategories, useCreateActivity, useUpdateActivity, useCalendarEvents } from "../../hooks";
 import type { Activity } from "../../types";
-import { todayISO } from "../../utils";
+import { todayISO, toTimeString } from "../../utils";
 
 const schema = z
   .object({
@@ -31,6 +32,32 @@ const schema = z
 
 type FormData = z.infer<typeof schema>;
 
+// Returns activities that overlap with the given time range on the same date
+const findConflicts = (
+  activities: Activity[],
+  date: string,
+  startTime: string,
+  endTime: string,
+  excludeId?: number
+): Activity[] => {
+  if (!date || !startTime) return [];
+
+  return activities.filter((a) => {
+    if (a.event_date !== date) return false;
+    if (excludeId && a.id === excludeId) return false;
+    if (a.is_all_day || !a.start_time) return false;
+    if (["completed", "cancelled"].includes(a.status)) return false;
+
+    const aStart = a.start_time.slice(0, 5);
+    const aEnd = a.end_time ? a.end_time.slice(0, 5) : aStart;
+    const bStart = startTime;
+    const bEnd = endTime || startTime;
+
+    // Overlap: not (aEnd <= bStart or bEnd <= aStart)
+    return !(aEnd <= bStart || bEnd <= aStart);
+  });
+};
+
 interface ActivityFormProps {
   activity?: Activity | null;
   prefillDate?: string | null;
@@ -44,6 +71,10 @@ export const ActivityForm = ({ activity, prefillDate, onSuccess }: ActivityFormP
 
   const isEditing = !!activity;
   const isLoading = createMutation.isPending || updateMutation.isPending;
+
+  const [conflicts, setConflicts] = useState<Activity[]>([]);
+  const [showConflictWarning, setShowConflictWarning] = useState(false);
+  const [pendingPayload, setPendingPayload] = useState<any>(null);
 
   const {
     register,
@@ -88,6 +119,26 @@ export const ActivityForm = ({ activity, prefillDate, onSuccess }: ActivityFormP
 
   const recurrence = watch("recurrence");
   const isAllDay = watch("is_all_day");
+  const watchedDate = watch("event_date");
+
+  // Fetch events for the selected date to check conflicts
+  const { data: dayEvents = [] } = useCalendarEvents(
+    watchedDate || todayISO(),
+    watchedDate || todayISO()
+  );
+
+  const doSave = async (payload: any) => {
+    try {
+      if (isEditing) {
+        await updateMutation.mutateAsync({ id: activity!.id, payload });
+      } else {
+        await createMutation.mutateAsync(payload);
+      }
+      onSuccess();
+    } catch (err) {
+      console.error(err);
+    }
+  };
 
   const onSubmit = async (data: FormData) => {
     const payload = {
@@ -99,16 +150,25 @@ export const ActivityForm = ({ activity, prefillDate, onSuccess }: ActivityFormP
       observations: data.observations || undefined,
     };
 
-    try {
-      if (isEditing) {
-        await updateMutation.mutateAsync({ id: activity!.id, payload });
-      } else {
-        await createMutation.mutateAsync(payload as any);
+    // Check for time conflicts if a start time is set
+    if (!data.is_all_day && data.start_time) {
+      const found = findConflicts(
+        dayEvents,
+        data.event_date,
+        data.start_time,
+        data.end_time || data.start_time,
+        activity?.id
+      );
+
+      if (found.length > 0) {
+        setConflicts(found);
+        setPendingPayload(payload);
+        setShowConflictWarning(true);
+        return;
       }
-      onSuccess();
-    } catch (err) {
-      console.error(err);
     }
+
+    await doSave(payload);
   };
 
   const categoryOptions = [
@@ -170,6 +230,69 @@ export const ActivityForm = ({ activity, prefillDate, onSuccess }: ActivityFormP
             error={errors.end_time?.message}
             {...register("end_time")}
           />
+        </div>
+      )}
+
+      {/* Conflict warning */}
+      {showConflictWarning && conflicts.length > 0 && (
+        <div className="bg-amber-500/10 border border-amber-500/25 rounded-xl p-4 flex flex-col gap-3">
+          <div className="flex items-start gap-2">
+            <AlertTriangle size={16} className="text-amber-400 mt-0.5 flex-shrink-0" />
+            <div>
+              <p className="text-sm font-medium text-amber-300">Conflicto de horario</p>
+              <p className="text-xs text-slate-400 mt-1">
+                Ya tenés{" "}
+                {conflicts.length === 1
+                  ? "una actividad"
+                  : `${conflicts.length} actividades`}{" "}
+                en ese horario:
+              </p>
+              <ul className="mt-2 flex flex-col gap-1">
+                {conflicts.map((c) => (
+                  <li key={c.id} className="text-xs text-amber-400 flex items-center gap-1.5">
+                    <span
+                      className="w-2 h-2 rounded-full flex-shrink-0"
+                      style={{ backgroundColor: c.category.color }}
+                    />
+                    <span className="font-medium">{c.title}</span>
+                    <span className="text-slate-500">
+                      {toTimeString(c.start_time)}
+                      {c.end_time && ` → ${toTimeString(c.end_time)}`}
+                    </span>
+                  </li>
+                ))}
+              </ul>
+            </div>
+          </div>
+          <p className="text-xs text-slate-500">¿Querés guardarla igual?</p>
+          <div className="flex gap-2">
+            <Button
+              type="button"
+              variant="secondary"
+              size="sm"
+              className="flex-1"
+              loading={isLoading}
+              onClick={async () => {
+                setShowConflictWarning(false);
+                await doSave(pendingPayload);
+              }}
+            >
+              Sí, guardar igual
+            </Button>
+            <Button
+              type="button"
+              variant="ghost"
+              size="sm"
+              className="flex-1"
+              onClick={() => {
+                setShowConflictWarning(false);
+                setConflicts([]);
+                setPendingPayload(null);
+              }}
+            >
+              Cancelar
+            </Button>
+          </div>
         </div>
       )}
 
@@ -245,24 +368,26 @@ export const ActivityForm = ({ activity, prefillDate, onSuccess }: ActivityFormP
         {...register("observations")}
       />
 
-      {/* Error message */}
+      {/* API error */}
       {(createMutation.isError || updateMutation.isError) && (
         <p className="text-sm text-rose-400 bg-rose-500/10 rounded-xl px-4 py-3 border border-rose-500/20">
           Ocurrió un error. Revisá los datos e intentá de nuevo.
         </p>
       )}
 
-      {/* Actions */}
-      <div className="flex gap-3 pt-2 sticky bottom-0 bg-slate-900 pb-1">
-        <Button
-          type="submit"
-          variant="primary"
-          loading={isLoading}
-          className="flex-1"
-        >
-          {isEditing ? "Guardar cambios" : "Crear actividad"}
-        </Button>
-      </div>
+      {/* Submit */}
+      {!showConflictWarning && (
+        <div className="flex gap-3 pt-2 sticky bottom-0 bg-slate-900 pb-1">
+          <Button
+            type="submit"
+            variant="primary"
+            loading={isLoading}
+            className="flex-1"
+          >
+            {isEditing ? "Guardar cambios" : "Crear actividad"}
+          </Button>
+        </div>
+      )}
     </form>
   );
 };

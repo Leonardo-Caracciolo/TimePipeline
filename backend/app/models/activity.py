@@ -33,12 +33,16 @@ class Category(Base):
     __tablename__ = "categories"
 
     id: Mapped[int] = mapped_column(Integer, primary_key=True, index=True)
-    name: Mapped[str] = mapped_column(String(100), unique=True, nullable=False)
-    color: Mapped[str] = mapped_column(String(7), default="#6366F1")  # hex color
+    user_id: Mapped[int] = mapped_column(
+        Integer, ForeignKey("users.id", ondelete="CASCADE"), nullable=False, index=True
+    )
+    name: Mapped[str] = mapped_column(String(100), nullable=False)
+    color: Mapped[str] = mapped_column(String(7), default="#6366F1")
     icon: Mapped[Optional[str]] = mapped_column(String(50), nullable=True)
     is_system: Mapped[bool] = mapped_column(Boolean, default=False)
     created_at: Mapped[datetime] = mapped_column(DateTime, server_default=func.now())
 
+    user: Mapped["User"] = relationship("User", back_populates="categories")  # noqa: F821
     activities: Mapped[list["Activity"]] = relationship(
         "Activity", back_populates="category", lazy="select"
     )
@@ -51,6 +55,9 @@ class Activity(Base):
     __tablename__ = "activities"
 
     id: Mapped[int] = mapped_column(Integer, primary_key=True, index=True)
+    user_id: Mapped[int] = mapped_column(
+        Integer, ForeignKey("users.id", ondelete="CASCADE"), nullable=False, index=True
+    )
     title: Mapped[str] = mapped_column(String(255), nullable=False, index=True)
     description: Mapped[Optional[str]] = mapped_column(Text, nullable=True)
     observations: Mapped[Optional[str]] = mapped_column(Text, nullable=True)
@@ -84,6 +91,7 @@ class Activity(Base):
         DateTime, server_default=func.now(), onupdate=func.now()
     )
 
+    user: Mapped["User"] = relationship("User", back_populates="activities")  # noqa: F821
     category: Mapped["Category"] = relationship("Category", back_populates="activities")
 
     def __repr__(self) -> str:

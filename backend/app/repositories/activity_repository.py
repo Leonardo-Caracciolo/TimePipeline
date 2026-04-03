@@ -1,6 +1,6 @@
 from datetime import date, timedelta
 from typing import Optional
-from sqlalchemy import select, func, and_, or_, desc, asc
+from sqlalchemy import select, func, and_, or_, desc
 from sqlalchemy.orm import Session, joinedload
 
 from app.models.activity import Activity, Category, Priority, Status, RecurrenceType
@@ -14,18 +14,31 @@ class CategoryRepository:
     def __init__(self, db: Session):
         self.db = db
 
-    def get_all(self) -> list[Category]:
-        stmt = select(Category).order_by(Category.name)
+    def get_all(self, user_id: int) -> list[Category]:
+        stmt = (
+            select(Category)
+            .where(Category.user_id == user_id)
+            .order_by(Category.name)
+        )
         return list(self.db.scalars(stmt).all())
 
-    def get_by_id(self, category_id: int) -> Optional[Category]:
-        return self.db.get(Category, category_id)
+    def get_by_id(self, category_id: int, user_id: int) -> Optional[Category]:
+        stmt = select(Category).where(
+            Category.id == category_id,
+            Category.user_id == user_id,
+        )
+        return self.db.scalar(stmt)
 
-    def get_by_name(self, name: str) -> Optional[Category]:
-        return self.db.scalar(select(Category).where(Category.name == name))
+    def get_by_name(self, name: str, user_id: int) -> Optional[Category]:
+        return self.db.scalar(
+            select(Category).where(
+                Category.name.ilike(name),
+                Category.user_id == user_id,
+            )
+        )
 
-    def create(self, payload: CategoryCreate, is_system: bool = False) -> Category:
-        category = Category(**payload.model_dump(), is_system=is_system)
+    def create(self, payload: CategoryCreate, user_id: int, is_system: bool = False) -> Category:
+        category = Category(**payload.model_dump(), user_id=user_id, is_system=is_system)
         self.db.add(category)
         self.db.commit()
         self.db.refresh(category)
@@ -42,13 +55,14 @@ class CategoryRepository:
         self.db.delete(category)
         self.db.commit()
 
-    def get_with_counts(self) -> list[dict]:
+    def get_with_counts(self, user_id: int) -> list[Category]:
         stmt = (
-            select(
-                Category,
-                func.count(Activity.id).label("activity_count"),
-            )
-            .outerjoin(Activity, Activity.category_id == Category.id)
+            select(Category, func.count(Activity.id).label("activity_count"))
+            .outerjoin(Activity, and_(
+                Activity.category_id == Category.id,
+                Activity.user_id == user_id,
+            ))
+            .where(Category.user_id == user_id)
             .group_by(Category.id)
             .order_by(Category.name)
         )
@@ -64,23 +78,24 @@ class ActivityRepository:
     def __init__(self, db: Session):
         self.db = db
 
-    def _base_query(self):
+    def _base_query(self, user_id: int):
         return (
             select(Activity)
             .options(joinedload(Activity.category))
+            .where(Activity.user_id == user_id)
             .order_by(desc(Activity.event_date), Activity.start_time)
         )
 
-    def get_by_id(self, activity_id: int) -> Optional[Activity]:
+    def get_by_id(self, activity_id: int, user_id: int) -> Optional[Activity]:
         stmt = (
             select(Activity)
             .options(joinedload(Activity.category))
-            .where(Activity.id == activity_id)
+            .where(Activity.id == activity_id, Activity.user_id == user_id)
         )
         return self.db.scalar(stmt)
 
-    def get_filtered(self, filters: ActivityFilters) -> tuple[list[Activity], int]:
-        conditions = []
+    def get_filtered(self, filters: ActivityFilters, user_id: int) -> tuple[list[Activity], int]:
+        conditions = [Activity.user_id == user_id]
 
         if filters.category_id is not None:
             conditions.append(Activity.category_id == filters.category_id)
@@ -97,131 +112,107 @@ class ActivityRepository:
         if filters.search:
             pattern = f"%{filters.search}%"
             conditions.append(
-                or_(
-                    Activity.title.ilike(pattern),
-                    Activity.description.ilike(pattern),
-                )
+                or_(Activity.title.ilike(pattern), Activity.description.ilike(pattern))
             )
 
-        count_stmt = select(func.count(Activity.id))
-        if conditions:
-            count_stmt = count_stmt.where(and_(*conditions))
-        total = self.db.scalar(count_stmt) or 0
-
+        total = self.db.scalar(select(func.count(Activity.id)).where(and_(*conditions))) or 0
         offset = (filters.page - 1) * filters.page_size
-        data_stmt = (
-            self._base_query()
-            .where(and_(*conditions) if conditions else True)
-            .offset(offset)
-            .limit(filters.page_size)
+        items = list(
+            self.db.scalars(
+                select(Activity)
+                .options(joinedload(Activity.category))
+                .where(and_(*conditions))
+                .order_by(desc(Activity.event_date), Activity.start_time)
+                .offset(offset)
+                .limit(filters.page_size)
+            ).all()
         )
-        items = list(self.db.scalars(data_stmt).all())
-
         return items, total
 
-    def get_for_date_range(self, date_from: date, date_to: date) -> list[Activity]:
+    def get_for_date_range(self, date_from: date, date_to: date, user_id: int) -> list[Activity]:
         stmt = (
-            self._base_query()
+            self._base_query(user_id)
             .where(
-                and_(
-                    Activity.event_date >= date_from,
-                    Activity.event_date <= date_to,
-                    Activity.status != Status.CANCELLED,
-                )
+                Activity.event_date >= date_from,
+                Activity.event_date <= date_to,
+                Activity.status != Status.CANCELLED,
             )
         )
         return list(self.db.scalars(stmt).all())
 
-    def get_today(self, today: date) -> list[Activity]:
-        stmt = (
-            self._base_query()
-            .where(
-                and_(
-                    Activity.event_date == today,
-                    Activity.status != Status.CANCELLED,
-                )
-            )
+    def get_today(self, today: date, user_id: int) -> list[Activity]:
+        stmt = self._base_query(user_id).where(
+            Activity.event_date == today,
+            Activity.status != Status.CANCELLED,
         )
         return list(self.db.scalars(stmt).all())
 
-    def get_upcoming(self, from_date: date, days: int = 7) -> list[Activity]:
+    def get_upcoming(self, from_date: date, user_id: int, days: int = 7) -> list[Activity]:
         to_date = from_date + timedelta(days=days)
-        stmt = (
-            self._base_query()
-            .where(
-                and_(
-                    Activity.event_date > from_date,
-                    Activity.event_date <= to_date,
-                    Activity.status.in_([Status.PENDING, Status.IN_PROGRESS]),
-                )
-            )
+        stmt = self._base_query(user_id).where(
+            Activity.event_date > from_date,
+            Activity.event_date <= to_date,
+            Activity.status.in_([Status.PENDING, Status.IN_PROGRESS]),
         )
         return list(self.db.scalars(stmt).all())
 
-    def get_overdue(self, today: date) -> list[Activity]:
-        stmt = (
-            self._base_query()
-            .where(
-                and_(
-                    Activity.event_date < today,
-                    Activity.status == Status.PENDING,
-                )
-            )
+    def get_overdue(self, today: date, user_id: int) -> list[Activity]:
+        stmt = self._base_query(user_id).where(
+            Activity.event_date < today,
+            Activity.status == Status.PENDING,
         )
         return list(self.db.scalars(stmt).all())
 
-    def get_deadlines_soon(self, today: date, days: int = 7) -> list[Activity]:
+    def get_deadlines_soon(self, today: date, user_id: int, days: int = 7) -> list[Activity]:
         to_date = today + timedelta(days=days)
-        stmt = (
-            self._base_query()
-            .where(
-                and_(
-                    Activity.is_deadline == True,  # noqa: E712
-                    Activity.event_date >= today,
-                    Activity.event_date <= to_date,
-                    Activity.status != Status.CANCELLED,
-                )
-            )
+        stmt = self._base_query(user_id).where(
+            Activity.is_deadline == True,  # noqa: E712
+            Activity.event_date >= today,
+            Activity.event_date <= to_date,
+            Activity.status != Status.CANCELLED,
         )
         return list(self.db.scalars(stmt).all())
 
-    def create(self, payload: ActivityCreate) -> Activity:
-        activity = Activity(**payload.model_dump())
+    def create(self, payload: ActivityCreate, user_id: int) -> Activity:
+        activity = Activity(**payload.model_dump(), user_id=user_id)
         self.db.add(activity)
         self.db.commit()
         self.db.refresh(activity)
-        return self.get_by_id(activity.id)  # type: ignore
+        return self.get_by_id(activity.id, user_id)  # type: ignore
 
     def update(self, activity: Activity, payload: ActivityUpdate) -> Activity:
         for field, value in payload.model_dump(exclude_unset=True).items():
             setattr(activity, field, value)
         self.db.commit()
         self.db.refresh(activity)
-        return self.get_by_id(activity.id)  # type: ignore
+        return self.get_by_id(activity.id, activity.user_id)  # type: ignore
 
     def delete(self, activity: Activity) -> None:
         self.db.delete(activity)
         self.db.commit()
 
-    def get_stats_by_category(self) -> list[dict]:
+    def get_stats_by_category(self, user_id: int) -> list[dict]:
         stmt = (
             select(
-                Category.id,
-                Category.name,
-                Category.color,
+                Category.id, Category.name, Category.color,
                 func.count(Activity.id).label("total"),
             )
-            .join(Activity, Activity.category_id == Category.id)
+            .join(Activity, and_(
+                Activity.category_id == Category.id,
+                Activity.user_id == user_id,
+            ))
+            .where(Category.user_id == user_id)
             .group_by(Category.id, Category.name, Category.color)
             .order_by(desc("total"))
         )
         rows = self.db.execute(stmt).all()
         return [{"id": r.id, "name": r.name, "color": r.color, "total": r.total} for r in rows]
 
-    def get_stats_by_field(self, field: str) -> dict:
+    def get_stats_by_field(self, field: str, user_id: int) -> dict:
         model_field = getattr(Activity, field)
         stmt = (
             select(model_field, func.count(Activity.id).label("count"))
+            .where(Activity.user_id == user_id)
             .group_by(model_field)
         )
         rows = self.db.execute(stmt).all()
