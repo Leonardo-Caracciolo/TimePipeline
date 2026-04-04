@@ -9,6 +9,8 @@ services:
     envVars:
       - key: PYTHON_VERSION
         value: 3.11.0
+      - key: DATABASE_URL
+        value: postgresql://postgres:2RKinn4_ZYHKc4?@db.erxzeivlrygsdgadspqg.supabase.co:5432/postgres
       - key: CORS_ORIGINS_JSON
         value: '["https://timepipeline-frontend.onrender.com"]'
 

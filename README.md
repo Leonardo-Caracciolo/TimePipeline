@@ -2,7 +2,9 @@
 
 Mi sistema personal de organización de actividades y calendario inteligente.
 
-Lo construí para centralizar en un solo lugar mis cursadas, parciales, entregas, cursos, trabajo y actividades personales, con una interfaz moderna pensada para usarse desde el iPhone.
+Lo construí para centralizar en un solo lugar mis cursadas, parciales, entregas, cursos laborales, cursos propios, reuniones de trabajo y actividades personales.
+
+Cada usuario tiene su propio calendario privado. Los datos persisten en PostgreSQL (Supabase).
 
 ---
 
@@ -13,13 +15,15 @@ Lo construí para centralizar en un solo lugar mis cursadas, parciales, entregas
 | Backend | FastAPI 0.111 + Python 3.11 |
 | ORM | SQLAlchemy 2.0 |
 | Validación | Pydantic v2 |
-| Base de datos | SQLite (WAL mode) |
+| Base de datos | PostgreSQL (Supabase) |
+| Auth | JWT con bcrypt |
 | Frontend | React 18 + Vite + TypeScript |
 | Estilos | Tailwind CSS |
 | State server | React Query v5 |
-| State UI | Zustand |
+| State UI | Zustand (con persistencia) |
 | Forms | React Hook Form + Zod |
 | Animaciones | Framer Motion |
+| Deploy | Render (backend + frontend) |
 
 ---
 
@@ -29,43 +33,58 @@ Lo construí para centralizar en un solo lugar mis cursadas, parciales, entregas
 timepipeline/
 ├── .gitignore
 ├── README.md
-├── render.yaml                    # Configuración de deploy en Render
+├── render.yaml                         # Configuración de deploy en Render
 ├── backend/
 │   ├── app/
 │   │   ├── core/
-│   │   │   ├── config.py          # Settings con pydantic-settings
-│   │   │   ├── database.py        # Engine SQLAlchemy + WAL pragma
-│   │   │   └── exceptions.py      # Jerarquía de excepciones de dominio
+│   │   │   ├── config.py               # Settings con pydantic-settings
+│   │   │   ├── database.py             # Engine SQLAlchemy
+│   │   │   ├── exceptions.py           # Jerarquía de excepciones de dominio
+│   │   │   └── security.py             # bcrypt + JWT
 │   │   ├── models/
-│   │   │   └── activity.py        # ORM: Activity, Category + Enums
+│   │   │   ├── user.py                 # ORM: User
+│   │   │   └── activity.py            # ORM: Activity, Category + Enums
 │   │   ├── schemas/
-│   │   │   └── activity.py        # Pydantic v2: validación + serialización
+│   │   │   ├── auth.py                 # UserRegister, UserLogin, TokenResponse
+│   │   │   └── activity.py            # Pydantic v2: validación + serialización
 │   │   ├── repositories/
-│   │   │   └── activity_repository.py  # Capa de acceso a datos
+│   │   │   ├── user_repository.py      # Acceso a datos de usuarios
+│   │   │   └── activity_repository.py # Acceso a datos de actividades y categorías
 │   │   ├── services/
-│   │   │   └── activity_service.py     # Lógica de negocio
+│   │   │   ├── auth_service.py         # Registro, login, categorías por defecto
+│   │   │   └── activity_service.py    # Lógica de negocio
 │   │   └── api/v1/
 │   │       ├── router.py
 │   │       └── endpoints/
-│   │           ├── activities.py
-│   │           ├── categories.py
-│   │           └── dashboard.py
-│   ├── seed.py                    # Datos de ejemplo
+│   │           ├── auth.py             # POST /register, POST /login, GET /me
+│   │           ├── activities.py       # CRUD + calendar + complete
+│   │           ├── categories.py       # CRUD categorías
+│   │           └── dashboard.py        # Stats + resumen del día
+│   ├── init_db.py                      # Crea tablas si no existen (deploy normal)
+│   ├── reset_db.py                     # Borra y recrea tablas (solo para migraciones)
 │   └── requirements.txt
 │
 └── frontend/
     └── src/
-        ├── types/         # Interfaces TypeScript del dominio
-        ├── api/           # Axios client tipado
-        ├── hooks/         # React Query hooks
-        ├── store/         # Zustand UI store
+        ├── types/
+        │   ├── index.ts                # Interfaces del dominio
+        │   └── auth.ts                 # User, TokenResponse, LoginForm
+        ├── api/index.ts                # Axios client con interceptores JWT
+        ├── hooks/
+        │   ├── index.ts                # React Query hooks (activities, categories, dashboard)
+        │   └── auth.ts                 # useLogin, useRegister, useLogout
+        ├── store/
+        │   ├── uiStore.ts              # Estado UI: modal, sidebar, filtros
+        │   └── authStore.ts            # Token + user con persistencia en localStorage
         ├── components/
-        │   ├── ui/        # Badge, Button, Modal, FormFields
-        │   ├── layout/    # Sidebar, MobileNav, MobileHeader
-        │   ├── calendar/  # CalendarGrid
-        │   ├── activities/ # ActivityCard, ActivityForm, ActivityModal
-        │   └── dashboard/ # StatCard
+        │   ├── ui/                     # Badge, Button, Modal, FormFields
+        │   ├── layout/                 # Sidebar, MobileNav, MobileHeader, ProtectedRoute
+        │   ├── calendar/               # CalendarGrid, DayEventsModal
+        │   ├── activities/             # ActivityCard, ActivityForm, ActivityModal
+        │   └── dashboard/              # StatCard
         └── pages/
+            ├── Login.tsx
+            ├── Register.tsx
             ├── Dashboard.tsx
             ├── Calendar.tsx
             ├── Activities.tsx
@@ -85,16 +104,17 @@ timepipeline/
 
 ```bash
 cd backend
-python -m venv venv
-source venv/bin/activate        # Windows: venv\Scripts\activate
+python -m venv .venv
+.venv\Scripts\activate        # Windows
+source .venv/bin/activate     # Mac/Linux
 
 pip install -r requirements.txt
-python seed.py                  # Inicializa la DB con datos de ejemplo
+python init_db.py             # Crea las tablas en la DB
 uvicorn app.main:app --reload --port 8000
 ```
 
 - API: `http://localhost:8000`
-- Docs interactivos: `http://localhost:8000/docs`
+- Docs: `http://localhost:8000/docs`
 
 ### Frontend
 
@@ -106,6 +126,19 @@ npm run dev
 
 - App: `http://localhost:5173`
 
+### Variables de entorno locales
+
+Crear `backend/.env`:
+```env
+DATABASE_URL=sqlite:///./timepipeline.db
+JWT_SECRET_KEY=mi-clave-secreta-local
+```
+
+Crear `frontend/.env.local`:
+```env
+VITE_API_URL=http://localhost:8000
+```
+
 ---
 
 ## Acceso desde iPhone (red local)
@@ -114,12 +147,9 @@ npm run dev
 # Backend con host abierto
 uvicorn app.main:app --reload --host 0.0.0.0 --port 8000
 
-# Obtener IP local de mi compu
-ipconfig getifaddr en0          # Mac
-ipconfig                        # Windows → buscar IPv4
-
-# Crear frontend/.env.local
-echo "VITE_API_URL=http://MI_IP:8000" > frontend/.env.local
+# Obtener IP local
+ipconfig getifaddr en0    # Mac
+ipconfig                  # Windows → buscar IPv4
 
 # Frontend con host abierto
 cd frontend
@@ -132,33 +162,32 @@ Para agregar a pantalla de inicio: botón compartir → "Agregar a pantalla de i
 
 ---
 
-## Deploy en Render
+## Deploy en Render + Supabase
 
-### 1. Hacer push a GitHub
+### Base de datos (Supabase)
 
-```bash
-git add .
-git commit -m "chore: production config"
-git push
-```
+1. Crear cuenta en [supabase.com](https://supabase.com) con GitHub
+2. Crear proyecto → Region: South America (São Paulo)
+3. Ir a **Connect** → **Direct** → copiar la connection string URI
+4. Reemplazar `[YOUR-PASSWORD]` con la contraseña del proyecto
 
-### 2. Crear cuenta en Render
+### Render
 
-Ir a [render.com](https://render.com) y registrarse con GitHub.
+Los dos servicios se configuran automáticamente con el `render.yaml`.
 
-### 3. Deployar con render.yaml
-
-Render detecta automáticamente el `render.yaml` en la raíz y configura los dos servicios solo.
-
-1. Dashboard de Render → **New** → **Blueprint**
+1. Ir a [render.com](https://render.com) → **New** → **Blueprint**
 2. Conectar el repo de GitHub
-3. Confirmar y deployar
+3. Confirmar el deploy
 
-Render crea automáticamente:
-- `timepipeline-api` → Web Service (FastAPI)
-- `timepipeline-frontend` → Static Site (React)
+Variables de entorno que Render necesita en el backend:
 
-### 4. URLs finales
+| Variable | Valor |
+|---|---|
+| `DATABASE_URL` | Connection string de Supabase |
+| `CORS_ORIGINS_JSON` | `["https://timepipeline-frontend.onrender.com"]` |
+| `JWT_SECRET_KEY` | Clave secreta larga y aleatoria |
+
+### URLs de producción
 
 | Servicio | URL |
 |---|---|
@@ -166,30 +195,15 @@ Render crea automáticamente:
 | API | `https://timepipeline-api.onrender.com` |
 | Docs API | `https://timepipeline-api.onrender.com/docs` |
 
-> **Nota:** En el free tier de Render, el backend se duerme después de 15 minutos de inactividad. La primera request tarda ~30 segundos en despertar. Para uso personal está bien.
-
 ---
 
-## Variables de entorno
-
-### Backend
-
-| Variable | Descripción | Default |
-|---|---|---|
-| `DATABASE_URL` | URL de conexión a la DB | SQLite local |
-| `CORS_ORIGINS_JSON` | Orígenes CORS permitidos (JSON array) | localhost |
-
-### Frontend
-
-| Variable | Descripción |
-|---|---|
-| `VITE_API_URL` | URL base del backend |
-
----
-
-## API — Endpoints principales
+## API — Endpoints
 
 ```
+POST    /api/v1/auth/register               Crear cuenta
+POST    /api/v1/auth/login                  Iniciar sesión
+GET     /api/v1/auth/me                     Usuario actual
+
 GET     /api/v1/dashboard/                  Stats + actividades del día
 GET     /api/v1/activities/                 Lista con filtros y paginación
 POST    /api/v1/activities/                 Crear actividad
@@ -197,8 +211,11 @@ PATCH   /api/v1/activities/{id}             Editar actividad
 DELETE  /api/v1/activities/{id}             Eliminar actividad
 POST    /api/v1/activities/{id}/complete    Marcar como completada
 GET     /api/v1/activities/calendar         Eventos por rango de fechas
-GET     /api/v1/categories/                 Listar categorías
+
+GET     /api/v1/categories/                 Listar categorías del usuario
 POST    /api/v1/categories/                 Crear categoría
+DELETE  /api/v1/categories/{id}             Eliminar categoría (si está vacía)
+
 GET     /health                             Health check
 ```
 
@@ -220,22 +237,28 @@ page_size     resultados por página (default: 50, máx: 200)
 
 ## Funcionalidades
 
-- **Dashboard** — actividades de hoy, próximos 7 días, vencidas, deadlines urgentes, barras por categoría
-- **Calendario mensual** — grilla navegable, click en día para crear, click en evento para editar
+- **Registro y login** — JWT, sesión persistente en localStorage, 7 días de validez
+- **Multi-usuario** — cada usuario ve solo sus propios datos, aislamiento total
+- **Dashboard** — actividades de hoy, próximos 7 días, vencidas, deadlines urgentes, barras por categoría, saludo dinámico por hora del día
+- **Calendario mensual** — grilla navegable, click en día con eventos muestra el detalle, click en día vacío abre el formulario
+- **Conflicto de horario** — aviso antes de guardar si hay superposición, con opción de guardar igual
 - **Lista de actividades** — búsqueda full-text, filtros combinables, paginación server-side
 - **CRUD completo** — crear, editar, eliminar, marcar como completada
 - **Recurrencia** — diaria, semanal, mensual con fecha de fin opcional
-- **Categorías** — 5 del sistema + puedo agregar las mías con color e ícono
-- **Prioridades** — Alta / Media / Baja con indicadores visuales por color
+- **Categorías** — 5 preconfiguradas al registrarse + agregar personalizadas con emoji picker y color
+- **Validación de categorías** — no permite duplicados (case-insensitive)
+- **Prioridades** — Alta / Media / Baja con indicadores visuales
 - **Estados** — Pendiente / En progreso / Completado / Cancelado
 - **Deadlines** — marcado especial con alerta en el dashboard
 - **Mobile-first** — navegación inferior en iOS, modals como bottom sheet, touch targets 44px, safe-area support
 
 ---
 
-## Categorías por defecto
+## Categorías preconfiguradas
 
-| Categoría | Color | Para qué la uso |
+Al registrarse, cada usuario recibe automáticamente:
+
+| Categoría | Color | Uso |
 |---|---|---|
 | 🎓 Facultad | Indigo | Cursadas, parciales, entregas, fechas importantes |
 | 💼 Trabajo | Sky | Reuniones, sprints, deadlines laborales |
@@ -245,13 +268,26 @@ page_size     resultados por página (default: 50, máx: 200)
 
 ---
 
+## Persistencia de datos
+
+Los datos se guardan en **PostgreSQL hosteado en Supabase**. A diferencia de SQLite en el servidor, los datos persisten aunque el backend de Render se duerma o se reinicie.
+
+Para migrar el esquema en producción:
+```bash
+# Solo cuando cambia el modelo de datos
+# Editar render.yaml: buildCommand → python reset_db.py
+# Hacer push, esperar deploy, volver a init_db.py y pushear de nuevo
+```
+
+---
+
 ## Roadmap
 
-- [ ] v1.1 — Push notifications (Web Push API + Service Worker)
-- [ ] v1.2 — Integración Google Calendar (OAuth2)
-- [ ] v1.3 — Recordatorios por email (FastAPI BackgroundTasks)
+- [ ] v1.1 — Login con Google OAuth2 y Microsoft OAuth2
+- [ ] v1.2 — Push notifications (Web Push API + Service Worker)
+- [ ] v1.3 — Integración Google Calendar (OAuth2 + sync)
+- [ ] v1.4 — Recordatorios por email (FastAPI BackgroundTasks)
 - [ ] v2.0 — Sugerencias inteligentes vía Claude API
 - [ ] v2.1 — Analytics de productividad (heatmap de actividad)
 - [ ] v2.2 — PWA completa con soporte offline
-- [ ] v2.3 — Multi-usuario con JWT Auth
-- [ ] v3.0 — Migración a PostgreSQL (un cambio en `DATABASE_URL`)
+- [ ] v2.3 — Vista semanal y vista diaria detallada
