@@ -3,21 +3,29 @@ from sqlalchemy.orm import DeclarativeBase, sessionmaker, Session
 from app.core.config import settings
 
 
-engine = create_engine(
-    settings.DATABASE_URL,
-    connect_args={"check_same_thread": False},
-    echo=settings.DEBUG,
-)
+def _build_engine():
+    if settings.DATABASE_URL.startswith("sqlite"):
+        engine = create_engine(
+            settings.DATABASE_URL,
+            connect_args={"check_same_thread": False},
+            echo=settings.DEBUG,
+        )
+
+        @event.listens_for(engine, "connect")
+        def set_sqlite_pragma(dbapi_conn, connection_record):
+            cursor = dbapi_conn.cursor()
+            cursor.execute("PRAGMA journal_mode=WAL")
+            cursor.execute("PRAGMA foreign_keys=ON")
+            cursor.execute("PRAGMA synchronous=NORMAL")
+            cursor.close()
+
+        return engine
+    else:
+        # PostgreSQL — no SQLite-specific options
+        return create_engine(settings.DATABASE_URL, echo=settings.DEBUG)
 
 
-@event.listens_for(engine, "connect")
-def set_sqlite_pragma(dbapi_conn, connection_record):
-    cursor = dbapi_conn.cursor()
-    cursor.execute("PRAGMA journal_mode=WAL")
-    cursor.execute("PRAGMA foreign_keys=ON")
-    cursor.execute("PRAGMA synchronous=NORMAL")
-    cursor.close()
-
+engine = _build_engine()
 
 SessionLocal = sessionmaker(autocommit=False, autoflush=False, bind=engine)
 
@@ -35,5 +43,5 @@ def get_db() -> Session:
 
 
 def init_db():
-    from app.models import user, activity  # noqa: F401 — registers all models
+    from app.models import user, activity  # noqa: F401
     Base.metadata.create_all(bind=engine)
